@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% block title %}Hosts — Update Monitor{% endblock %}
+{% block content %}
+  <h1>Hosts</h1>
+  <div class="sub">Ajoute, modifie ou retire des machines à surveiller — aucune limite de nombre.</div>
+
+  <div class="card">
+    <h2>{% if edit_host %}Modifier "{{ edit_host.name }}"{% else %}Ajouter un host{% endif %}</h2>
+    <form class="stacked" method="POST"
+          action="{% if edit_host %}/hosts/{{ edit_host.id }}/update{% else %}/hosts/add{% endif %}">
+
+      <label>Nom (identifiant unique)</label>
+      <input type="text" name="name" required value="{{ edit_host.name if edit_host else '' }}">
+
+      <label>Adresse (IP ou hostname)</label>
+      <input type="text" name="address" required value="{{ edit_host.address if edit_host else '' }}">
+
+      <label>Port SSH</label>
+      <input type="number" name="port" value="{{ edit_host.port if edit_host else 22 }}">
+
+      <label>Gestionnaire de paquets</label>
+      <select name="package_manager">
+        {% for pm_id, pm in package_managers.items() %}
+        <option value="{{ pm_id }}"
+          {% if (edit_host and edit_host.package_manager == pm_id) or (not edit_host and pm_id == default_pm) %}selected{% endif %}>
+          {{ pm.label }}
+        </option>
+        {% endfor %}
+      </select>
+
+      <label>Utilisateur SSH</label>
+      <input type="text" name="user" required value="{{ edit_host.user if edit_host else '' }}">
+
+      <label>Méthode d'authentification</label>
+      <select name="auth_method" id="auth_method" onchange="toggleAuthFields()">
+        <option value="key" {% if edit_host and edit_host.auth_method == 'key' %}selected{% endif %}>Clé SSH</option>
+        <option value="password" {% if edit_host and edit_host.auth_method == 'password' %}selected{% endif %}>Mot de passe</option>
+      </select>
+
+      <div id="key_field">
+        <label>Chemin de la clé privée (sur le conteneur, ex: /app/keys/id_rsa)</label>
+        <input type="text" name="ssh_key_path" value="{{ edit_host.ssh_key_path if edit_host else '/app/keys/id_rsa' }}">
+      </div>
+
+      <div id="password_field">
+        <label>Mot de passe SSH {% if edit_host %}(laisser vide pour ne pas changer){% endif %}</label>
+        <input type="password" name="ssh_password" autocomplete="new-password">
+        <div class="hint">Stocké en clair dans la base locale — préfère une clé SSH si possible.</div>
+      </div>
+
+      <div class="checkbox-row">
+        <input type="checkbox" name="security_only" id="security_only"
+               {% if edit_host and edit_host.security_only %}checked{% endif %}>
+        <label for="security_only" style="margin:0;">Ne compter que les mises à jour de sécurité</label>
+      </div>
+      <div class="hint">Fiable uniquement pour APT (Debian/Ubuntu) — sans effet pour les autres gestionnaires pour l'instant.</div>
+
+      <div class="actions">
+        <button type="submit">{% if edit_host %}Enregistrer{% else %}Ajouter{% endif %}</button>
+        {% if edit_host %}<a href="/hosts" class="btn secondary">Annuler</a>{% endif %}
+      </div>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>Hosts configurés ({{ hosts|length }})</h2>
+    {% if not hosts %}
+      <div class="sub">Aucun host pour l'instant.</div>
+    {% else %}
+    <table>
+      <thead>
+        <tr><th>Nom</th><th>Adresse</th><th>Utilisateur</th><th>Gestionnaire</th><th>Auth</th><th>Sécurité seule</th><th></th></tr>
+      </thead>
+      <tbody>
+        {% for h in hosts %}
+        <tr>
+          <td class="row-name">{{ h.name }}</td>
+          <td>{{ h.address }}:{{ h.port }}</td>
+          <td>{{ h.user }}</td>
+          <td>{{ package_managers[h.package_manager].label if h.package_manager in package_managers else h.package_manager }}</td>
+          <td>{{ 'Clé SSH' if h.auth_method == 'key' else 'Mot de passe' }}</td>
+          <td>{{ 'Oui' if h.security_only else 'Non' }}</td>
+          <td>
+            <a href="/hosts/{{ h.id }}/edit" class="action-btn" style="text-decoration:none;">Modifier</a>
+            <form method="POST" action="/hosts/{{ h.id }}/delete" style="display:inline"
+                  onsubmit="return confirm('Supprimer {{ h.name }} et son historique ?');">
+              <button type="submit" class="action-btn" style="border-color:var(--err); color:var(--err);">Supprimer</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </div>
+
+  <script>
+    function toggleAuthFields() {
+      const method = document.getElementById('auth_method').value;
+      document.getElementById('key_field').style.display = method === 'key' ? 'block' : 'none';
+      document.getElementById('password_field').style.display = method === 'password' ? 'block' : 'none';
+    }
+    toggleAuthFields();
+  </script>
+{% endblock %}

@@ -1,0 +1,170 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — Update Monitor{% endblock %}
+{% block content %}
+  <h1>Dashboard</h1>
+  <div class="sub">Surveillance et mise à jour du parc Linux</div>
+
+  <div class="toolbar">
+    <button onclick="checkAll()">Vérifier tous les hosts</button>
+    {% if data %}
+    <button class="secondary" onclick="upgradeAllPending()">Mettre à jour les hosts en attente</button>
+    {% endif %}
+    <a href="/hosts" class="btn secondary">Gérer les hosts</a>
+  </div>
+
+  {% if not data %}
+  <div class="card">
+    Aucun host configuré pour l'instant. <a href="/hosts">Ajoute ton premier host</a>.
+  </div>
+  {% else %}
+  <table>
+    <thead>
+      <tr>
+        <th>Host</th>
+        <th>Adresse</th>
+        <th>Statut</th>
+        <th>Dernière vérification</th>
+        <th>Dernière mise à jour</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in data %}
+      <tr>
+        <td class="row-name">{{ row.host.name }}{% if row.host.security_only %} <span style="color:var(--muted); font-weight:400; font-size:0.75rem;">(sécurité)</span>{% endif %}</td>
+        <td>{{ row.host.address }}</td>
+        <td>
+          {% if not row.last_check %}
+            <span class="badge none">jamais vérifié</span>
+          {% elif row.last_check.status == 'error' %}
+            <span class="badge err" title="{{ row.last_check.error_message }}">erreur</span>
+          {% elif row.last_check.update_count > 0 %}
+            <span class="badge warn">{{ row.last_check.update_count }} mise(s) à jour</span>
+          {% else %}
+            <span class="badge ok">à jour</span>
+          {% endif %}
+        </td>
+        <td class="timestamp">{{ row.last_check.checked_at if row.last_check else '—' }}</td>
+        <td class="timestamp">
+          {% if row.last_upgrade %}
+            {{ row.last_upgrade.started_at }}
+            {% if row.last_upgrade.status == 'error' %}<span class="badge err">échec</span>{% else %}<span class="badge ok">ok</span>{% endif %}
+          {% else %} — {% endif %}
+        </td>
+        <td>
+          <button class="action-btn" onclick="checkOne({{ row.host.id }}, this)">Vérifier</button>
+          <button class="action-btn upgrade" onclick="upgradeOne({{ row.host.id }}, '{{ row.host.name }}', this)">Mettre à jour</button>
+          {% if row.last_check and row.last_check.packages %}
+          <button class="action-btn" onclick="toggle('pkg-{{ row.host.id }}')">Paquets</button>
+          {% endif %}
+          {% if row.last_upgrade and row.last_upgrade.output %}
+          <button class="action-btn" onclick="toggle('log-{{ row.host.id }}')">Log</button>
+          {% endif %}
+        </td>
+      </tr>
+      {% if (row.last_check and row.last_check.packages) or (row.last_upgrade and row.last_upgrade.output) %}
+      <tr>
+        <td colspan="6" style="border:none; padding-top:0;">
+          {% if row.last_check and row.last_check.packages %}
+          <div class="pkg-list" id="pkg-{{ row.host.id }}">{{ row.last_check.packages }}</div>
+          {% endif %}
+          {% if row.last_upgrade and row.last_upgrade.output %}
+          <div class="log-list" id="log-{{ row.host.id }}">{{ row.last_upgrade.output }}</div>
+          {% endif %}
+        </td>
+      </tr>
+      {% endif %}
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  <div id="terminal-modal" class="terminal-overlay">
+    <div class="terminal-box">
+      <div class="terminal-header">
+        <span id="terminal-title">Console</span>
+        <button id="terminal-close" class="action-btn" onclick="terminalDoneAndReload()" disabled>Fermer et rafraîchir</button>
+      </div>
+      <pre id="terminal-output" class="terminal-output"></pre>
+    </div>
+  </div>
+
+  <script>
+    function toggle(id) {
+      const el = document.getElementById(id);
+      el.style.display = el.style.display === 'block' ? 'none' : 'block';
+    }
+
+    async function checkOne(hostId, btn) {
+      btn.textContent = '...';
+      await fetch(`/api/check/${hostId}`, { method: 'POST' });
+      location.reload();
+    }
+
+    async function checkAll() {
+      const btn = event.target;
+      btn.textContent = 'Vérification en cours...';
+      await fetch('/api/check-all', { method: 'POST' });
+      location.reload();
+    }
+
+    function openTerminal(hostName) {
+      document.getElementById('terminal-title').textContent = 'Mise à jour — ' + hostName;
+      document.getElementById('terminal-output').textContent = '';
+      document.getElementById('terminal-close').disabled = true;
+      document.getElementById('terminal-modal').style.display = 'flex';
+    }
+
+    function appendTerminal(text) {
+      const out = document.getElementById('terminal-output');
+      out.textContent += text;
+      out.scrollTop = out.scrollHeight;
+    }
+
+    function terminalDoneAndReload() {
+      document.getElementById('terminal-modal').style.display = 'none';
+      location.reload();
+    }
+
+    async function upgradeOne(hostId, hostName, btn) {
+      if (!confirm(`Lancer la mise à jour sur ${hostName} ? Cette action installe réellement les paquets.`)) return;
+      openTerminal(hostName);
+      try {
+        const resp = await fetch(`/api/upgrade-stream/${hostId}`, { method: 'POST' });
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          appendTerminal(decoder.decode(value, { stream: true }));
+        }
+      } catch (e) {
+        appendTerminal('\n[ERREUR CÔTÉ NAVIGATEUR] ' + e + '\n');
+      } finally {
+        document.getElementById('terminal-close').disabled = false;
+      }
+    }
+
+    async function upgradeAllPending() {
+      const pendingIds = [
+        {% for row in data %}
+        {% if row.last_check and row.last_check.status == 'ok' and row.last_check.update_count > 0 %}
+        {{ row.host.id }},
+        {% endif %}
+        {% endfor %}
+      ];
+      if (pendingIds.length === 0) {
+        alert('Aucun host en attente de mise à jour (fais "Vérifier tous les hosts" d\'abord si besoin).');
+        return;
+      }
+      if (!confirm(`Lancer la mise à jour sur ${pendingIds.length} host(s) ? (pas de console live pour l'opération groupée)`)) return;
+      const btn = event.target;
+      btn.textContent = 'Mises à jour en cours...';
+      btn.disabled = true;
+      for (const id of pendingIds) {
+        await fetch(`/api/upgrade/${id}`, { method: 'POST' });
+      }
+      location.reload();
+    }
+  </script>
+{% endblock %}

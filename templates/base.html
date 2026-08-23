@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>{% block title %}Update Monitor{% endblock %}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg: #0f1115;
+    --card: #171a21;
+    --border: #2a2e38;
+    --text: #e6e8eb;
+    --muted: #8b93a1;
+    --ok: #3ddc84;
+    --warn: #f5a623;
+    --err: #ff5c5c;
+    --accent: #5865f2;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+  }
+  .container { max-width: 1000px; margin: 0 auto; padding: 24px; }
+  nav {
+    display: flex;
+    gap: 4px;
+    padding: 14px 24px;
+    border-bottom: 1px solid var(--border);
+    background: var(--card);
+  }
+  nav a {
+    color: var(--muted);
+    text-decoration: none;
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 0.88rem;
+    font-weight: 500;
+  }
+  nav a.active, nav a:hover { color: var(--text); background: rgba(255,255,255,0.06); }
+  nav .brand { color: var(--text); font-weight: 700; margin-right: 16px; padding: 6px 0; }
+  h1 { font-size: 1.4rem; margin-bottom: 4px; }
+  h2 { font-size: 1.05rem; margin: 0 0 14px; }
+  .sub { color: var(--muted); margin-bottom: 20px; font-size: 0.9rem; }
+  .toolbar { margin-bottom: 20px; display: flex; gap: 10px; }
+  button, .btn {
+    background: var(--accent);
+    color: white;
+    border: none;
+    padding: 8px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    text-decoration: none;
+    display: inline-block;
+  }
+  button.secondary, .btn.secondary { background: #2a2e38; }
+  button.danger { background: var(--err); }
+  button:hover, .btn:hover { opacity: 0.85; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 0.9rem; }
+  th { color: var(--muted); font-weight: 500; font-size: 0.8rem; text-transform: uppercase; }
+  tr:hover { background: rgba(255,255,255,0.02); }
+  .badge {
+    display: inline-block;
+    padding: 3px 9px;
+    border-radius: 999px;
+    font-size: 0.78rem;
+    font-weight: 600;
+  }
+  .badge.ok { background: rgba(61,220,132,0.15); color: var(--ok); }
+  .badge.warn { background: rgba(245,166,35,0.15); color: var(--warn); }
+  .badge.err { background: rgba(255,92,92,0.15); color: var(--err); }
+  .badge.none { background: rgba(139,147,161,0.15); color: var(--muted); }
+  .action-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 4px 10px;
+    font-size: 0.78rem;
+    margin-right: 4px;
+  }
+  .action-btn.upgrade { border-color: var(--warn); color: var(--warn); }
+  .pkg-list, .log-list {
+    display: none;
+    white-space: pre-wrap;
+    font-family: monospace;
+    font-size: 0.78rem;
+    color: var(--muted);
+    padding: 8px 12px;
+    background: #0c0e12;
+    border-radius: 6px;
+    margin-top: 6px;
+    max-height: 320px;
+    overflow-y: auto;
+  }
+  .row-name { font-weight: 600; }
+  .timestamp { color: var(--muted); font-size: 0.8rem; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+    margin-bottom: 20px;
+  }
+  form.stacked label {
+    display: block;
+    font-size: 0.82rem;
+    color: var(--muted);
+    margin: 12px 0 4px;
+  }
+  form.stacked input[type=text], form.stacked input[type=number],
+  form.stacked input[type=password], form.stacked select {
+    width: 100%;
+    background: #0c0e12;
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px 10px;
+    border-radius: 6px;
+    font-size: 0.88rem;
+  }
+  form.stacked .checkbox-row { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
+  form.stacked .checkbox-row label { margin: 0; }
+  form.stacked .hint { color: var(--muted); font-size: 0.78rem; margin-top: 4px; }
+  form.stacked .actions { margin-top: 18px; display: flex; gap: 10px; }
+  .terminal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.65);
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    padding: 24px;
+  }
+  .terminal-box {
+    background: #0c0e12;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    width: 100%;
+    max-width: 800px;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .terminal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    background: var(--card);
+    font-size: 0.85rem;
+    font-weight: 600;
+  }
+  .terminal-output {
+    margin: 0;
+    padding: 14px;
+    overflow-y: auto;
+    font-family: "SF Mono", Consolas, monospace;
+    font-size: 0.78rem;
+    line-height: 1.5;
+    color: #a9f0a0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    flex: 1;
+  }
+</style>
+</head>
+<body>
+  <nav>
+    <span class="brand">Update Monitor</span>
+    <a href="/" class="{% if active == 'dashboard' %}active{% endif %}">Dashboard</a>
+    <a href="/hosts" class="{% if active == 'hosts' %}active{% endif %}">Hosts</a>
+    <a href="/settings" class="{% if active == 'settings' %}active{% endif %}">Réglages</a>
+  </nav>
+  <div class="container">
+    {% block content %}{% endblock %}
+  </div>
+</body>
+</html>

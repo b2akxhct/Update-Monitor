@@ -1,0 +1,12 @@
+services:
+  update-monitor:
+    build: .
+    container_name: update-monitor
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./data:/app/data
+      - ./keys:/app/keys:ro
+    environment:
+      - TZ=Europe/Paris

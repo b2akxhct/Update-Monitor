@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}Réglages — Update Monitor{% endblock %}
+{% block content %}
+  <h1>Réglages</h1>
+  <div class="sub">Webhook Discord et planning des vérifications automatiques.</div>
+
+  <div class="card">
+    <form class="stacked" method="POST" action="/settings">
+
+      <label>Webhook Discord</label>
+      <input type="text" name="discord_webhook_url" placeholder="https://discord.com/api/webhooks/..."
+             value="{{ settings.discord_webhook_url or '' }}">
+
+      <div class="checkbox-row">
+        <input type="checkbox" name="notify_only_if_updates" id="notify_only_if_updates"
+               {% if settings.notify_only_if_updates %}checked{% endif %}>
+        <label for="notify_only_if_updates" style="margin:0;">Ne notifier Discord que s'il y a des mises à jour</label>
+      </div>
+
+      <label>Planning des vérifications automatiques (cron)</label>
+      <input type="text" name="schedule_cron" value="{{ settings.schedule_cron }}">
+      <div class="hint">Format : minute heure jour mois jour_semaine. Exemple : "0 8 * * *" = tous les jours à 8h.</div>
+
+      <label>Timeout SSH (secondes)</label>
+      <input type="number" name="ssh_timeout" value="{{ settings.ssh_timeout }}">
+
+      <div class="actions">
+        <button type="submit">Enregistrer</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>Test rapide</h2>
+    <div class="sub">Déclenche une vérification globale immédiate (respecte le réglage de notification ci-dessus).</div>
+    <button onclick="runNow()">Lancer une vérification maintenant</button>
+    <pre id="result" style="margin-top:14px; white-space:pre-wrap; font-size:0.8rem; color:var(--muted);"></pre>
+  </div>
+
+  <script>
+    async function runNow() {
+      const btn = event.target;
+      btn.textContent = 'En cours...';
+      const resp = await fetch('/api/check-all', { method: 'POST' });
+      const data = await resp.json();
+      document.getElementById('result').textContent = data.summary.join('\n');
+      btn.textContent = 'Lancer une vérification maintenant';
+    }
+  </script>
+{% endblock %}
