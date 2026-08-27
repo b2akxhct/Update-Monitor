@@ -69,13 +69,16 @@ PACKAGE_MANAGERS = {
         "label": "APT (Debian / Ubuntu)",
         "check_cmd": lambda root: (
             f"{_sudo(root)}apt-get update -qq && "
-            "apt list --upgradable 2>/dev/null | grep -v '^Listing'"
+            "apt list --upgradable 2>/dev/null | grep -v '^Listing' || true"
         ),
         "upgrade_cmd": lambda root: (
             f"{_sudo(root)}apt-get update -qq && "
             f"{_sudo(root)}DEBIAN_FRONTEND=noninteractive apt-get "
             '-o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" '
-            "-y upgrade"
+            "-y full-upgrade"
+        ),
+        "autoremove_cmd": lambda root: (
+            f"{_sudo(root)}DEBIAN_FRONTEND=noninteractive apt-get -y autoremove"
         ),
         "success_exit_codes": {0},
         "parse": _parse_lines_nonempty,
@@ -88,6 +91,8 @@ PACKAGE_MANAGERS = {
         "upgrade_cmd": lambda root: (
             f"{_sudo(root)}apk update -q && {_sudo(root)}apk upgrade --no-cache"
         ),
+        # apk n'a pas d'équivalent fiable à "autoremove" pour l'instant
+        "autoremove_cmd": None,
         "success_exit_codes": {0},
         "parse": _parse_lines_nonempty,
     },
@@ -95,6 +100,7 @@ PACKAGE_MANAGERS = {
         "label": "DNF (Fedora / RHEL 8+ / CentOS Stream)",
         "check_cmd": lambda root: f"{_sudo(root)}dnf check-update -q",
         "upgrade_cmd": lambda root: f"{_sudo(root)}dnf -y upgrade",
+        "autoremove_cmd": lambda root: f"{_sudo(root)}dnf -y autoremove",
         # dnf check-update renvoie 100 (pas 0) quand des mises à jour existent
         "success_exit_codes": {0, 100},
         "parse": _parse_dnf_yum,
@@ -103,6 +109,7 @@ PACKAGE_MANAGERS = {
         "label": "YUM (RHEL / CentOS 7)",
         "check_cmd": lambda root: f"{_sudo(root)}yum check-update -q",
         "upgrade_cmd": lambda root: f"{_sudo(root)}yum -y update",
+        "autoremove_cmd": lambda root: f"{_sudo(root)}yum -y autoremove",
         "success_exit_codes": {0, 100},
         "parse": _parse_dnf_yum,
     },
@@ -112,6 +119,12 @@ PACKAGE_MANAGERS = {
             f"{_sudo(root)}pacman -Sy --noconfirm >/dev/null 2>&1; pacman -Qu 2>/dev/null"
         ),
         "upgrade_cmd": lambda root: f"{_sudo(root)}pacman -Syu --noconfirm",
+        "autoremove_cmd": lambda root: (
+            f"{_sudo(root)}bash -c "
+            "'pkgs=$(pacman -Qtdq 2>/dev/null); "
+            'if [ -n "$pkgs" ]; then pacman -Rns --noconfirm $pkgs; '
+            "else echo \"Aucun paquet orphelin à supprimer\"; fi'"
+        ),
         # pacman -Qu renvoie 1 quand il n'y a rien à mettre à jour (pas une erreur)
         "success_exit_codes": {0, 1},
         "parse": _parse_pacman,
@@ -123,6 +136,8 @@ PACKAGE_MANAGERS = {
             "zypper --non-interactive list-updates"
         ),
         "upgrade_cmd": lambda root: f"{_sudo(root)}zypper --non-interactive update",
+        # Pas d'équivalent autoremove fiable implémenté pour zypper pour l'instant
+        "autoremove_cmd": None,
         "success_exit_codes": {0, 100, 101, 102, 103},
         "parse": _parse_zypper,
     },
@@ -136,6 +151,8 @@ DEFAULT_SETTINGS = {
     "notify_only_if_updates": 1,
     "schedule_cron": "0 8 * * *",
     "ssh_timeout": 15,
+    "auto_upgrade": 0,
+    "auto_autoremove": 0,
 }
 
 
@@ -200,14 +217,22 @@ def init_db():
                 discord_webhook_url TEXT,
                 notify_only_if_updates INTEGER NOT NULL DEFAULT 1,
                 schedule_cron TEXT NOT NULL DEFAULT '0 8 * * *',
-                ssh_timeout INTEGER NOT NULL DEFAULT 15
+                ssh_timeout INTEGER NOT NULL DEFAULT 15,
+                auto_upgrade INTEGER NOT NULL DEFAULT 0,
+                auto_autoremove INTEGER NOT NULL DEFAULT 0
             )
         """)
+        # Migration pour les bases créées avant l'ajout de ces réglages
+        for col_def in ("auto_upgrade INTEGER NOT NULL DEFAULT 0", "auto_autoremove INTEGER NOT NULL DEFAULT 0"):
+            try:
+                conn.execute(f"ALTER TABLE settings ADD COLUMN {col_def}")
+            except sqlite3.OperationalError:
+                pass  # colonne déjà présente
         existing = conn.execute("SELECT id FROM settings WHERE id = 1").fetchone()
         if not existing:
             conn.execute("""
-                INSERT INTO settings (id, discord_webhook_url, notify_only_if_updates, schedule_cron, ssh_timeout)
-                VALUES (1, :discord_webhook_url, :notify_only_if_updates, :schedule_cron, :ssh_timeout)
+                INSERT INTO settings (id, discord_webhook_url, notify_only_if_updates, schedule_cron, ssh_timeout, auto_upgrade, auto_autoremove)
+                VALUES (1, :discord_webhook_url, :notify_only_if_updates, :schedule_cron, :ssh_timeout, :auto_upgrade, :auto_autoremove)
             """, DEFAULT_SETTINGS)
         conn.commit()
 
@@ -225,13 +250,17 @@ def update_settings(data):
                 discord_webhook_url = ?,
                 notify_only_if_updates = ?,
                 schedule_cron = ?,
-                ssh_timeout = ?
+                ssh_timeout = ?,
+                auto_upgrade = ?,
+                auto_autoremove = ?
             WHERE id = 1
         """, (
             data["discord_webhook_url"],
             1 if data.get("notify_only_if_updates") else 0,
             data["schedule_cron"],
             int(data["ssh_timeout"]),
+            1 if data.get("auto_upgrade") else 0,
+            1 if data.get("auto_autoremove") else 0,
         ))
         conn.commit()
 
@@ -316,6 +345,53 @@ def upgrade_host(host_row, ssh_timeout):
         client.close()
 
 
+def run_autoremove(host_row, ssh_timeout):
+    """Supprime les paquets qui ne sont plus nécessaires (orphelins/dépendances
+    inutiles). Retourne un statut 'ok' avec un message explicite si le
+    gestionnaire de paquets du host n'a pas d'équivalent supporté."""
+    pm = PACKAGE_MANAGERS.get(host_row["package_manager"] or DEFAULT_PACKAGE_MANAGER, PACKAGE_MANAGERS[DEFAULT_PACKAGE_MANAGER])
+    cmd_builder = pm.get("autoremove_cmd")
+    if not cmd_builder:
+        return {"status": "ok", "output": f"(pas de nettoyage automatique supporté pour {pm['label']})"}
+
+    is_root = host_row["user"] == "root"
+    try:
+        client = _ssh_connect(host_row, ssh_timeout)
+    except Exception as e:
+        return {"status": "error", "output": str(e)}
+
+    try:
+        timeout = max(ssh_timeout * 10, 180)
+        cmd = cmd_builder(is_root)
+        stdin, stdout, stderr = client.exec_command(cmd, timeout=timeout)
+        out = stdout.read().decode("utf-8", errors="replace")
+        err = stderr.read().decode("utf-8", errors="replace")
+        exit_code = stdout.channel.recv_exit_status()
+
+        combined = out + ("\n--- stderr ---\n" + err if err.strip() else "")
+        status = "ok" if exit_code == 0 else "error"
+        return {"status": status, "output": combined.strip()}
+    except Exception as e:
+        return {"status": "error", "output": str(e)}
+    finally:
+        client.close()
+
+
+def _maybe_autoremove(host_row, ssh_timeout, upgrade_result, auto_autoremove_enabled):
+    """Si activé, lance le nettoyage après une mise à jour réussie et
+    fusionne le résultat dans upgrade_result. Ne modifie rien si la
+    mise à jour elle-même a échoué."""
+    if not auto_autoremove_enabled or upgrade_result["status"] != "ok":
+        return upgrade_result
+
+    ar = run_autoremove(host_row, ssh_timeout)
+    header = "\n\n--- Suppression des paquets inutiles ---\n"
+    upgrade_result["output"] = (upgrade_result.get("output") or "") + header + ar["output"]
+    if ar["status"] == "error":
+        upgrade_result["output"] += "\n[Le nettoyage a échoué, la mise à jour elle-même a réussi]"
+    return upgrade_result
+
+
 def record_check(host_id, result):
     with db_lock, get_db() as conn:
         conn.execute("""
@@ -372,31 +448,63 @@ def send_discord_notification(webhook_url, summary_lines):
 # Cycle de vérification complet (utilisé par le scheduler et "Vérifier tout")
 # ---------------------------------------------------------------------------
 
+def _process_host_for_scheduled_check(host, settings):
+    """Vérifie un host et, si l'auto-upgrade est activée et des mises à
+    jour sont trouvées, les installe (+ nettoyage si activé). Met à jour
+    l'historique en base et retourne une ligne de résumé pour Discord."""
+    ssh_timeout = settings["ssh_timeout"]
+    auto_upgrade = bool(settings.get("auto_upgrade"))
+    auto_autoremove = bool(settings.get("auto_autoremove"))
+
+    result = check_host(host, ssh_timeout)
+    record_check(host["id"], result)
+
+    if result["status"] == "error":
+        return f"⚠️ **{host['name']}** : erreur ({result['error_message']})"
+
+    if result["update_count"] == 0:
+        return f"✅ **{host['name']}** : à jour"
+
+    if not auto_upgrade:
+        return f"🔶 **{host['name']}** : {result['update_count']} mise(s) à jour"
+
+    # Auto-upgrade activée et des mises à jour sont disponibles
+    started_at = datetime.now(timezone.utc).isoformat()
+    up_result = upgrade_host(host, ssh_timeout)
+    up_result = _maybe_autoremove(host, ssh_timeout, up_result, auto_autoremove)
+    record_upgrade(host["id"], started_at, up_result)
+
+    # Re-vérifie après coup pour le compteur final envoyé sur Discord
+    final = check_host(host, ssh_timeout)
+    record_check(host["id"], final)
+
+    if up_result["status"] == "error":
+        return f"⚠️ **{host['name']}** : échec de la mise à jour automatique"
+    if final["status"] == "ok" and final["update_count"] == 0:
+        return f"✅ **{host['name']}** : mis à jour automatiquement ({result['update_count']} paquet(s))"
+    if final["status"] == "ok":
+        return f"🔶 **{host['name']}** : mise à jour partielle, {final['update_count']} restante(s)"
+    return f"⚠️ **{host['name']}** : mise à jour effectuée mais vérification finale en erreur"
+
+
 def run_full_check(notify=True):
     settings = get_settings()
-    ssh_timeout = settings["ssh_timeout"]
 
     with get_db() as conn:
         hosts = conn.execute("SELECT * FROM hosts").fetchall()
 
     summary_lines = [f"**Rapport de mises à jour — {datetime.now().strftime('%d/%m/%Y %H:%M')}**"]
-    any_updates = False
+    any_flagged = False  # updates trouvées, installées, ou erreur
 
     for host in hosts:
-        result = check_host(host, ssh_timeout)
-        record_check(host["id"], result)
-
-        if result["status"] == "error":
-            summary_lines.append(f"⚠️ **{host['name']}** : erreur ({result['error_message']})")
-        elif result["update_count"] > 0:
-            any_updates = True
-            summary_lines.append(f"🔶 **{host['name']}** : {result['update_count']} mise(s) à jour")
-        else:
-            summary_lines.append(f"✅ **{host['name']}** : à jour")
+        line = _process_host_for_scheduled_check(host, settings)
+        summary_lines.append(line)
+        if not line.startswith("✅"):
+            any_flagged = True
 
     if notify:
         webhook_url = settings["discord_webhook_url"]
-        if webhook_url and (any_updates or not settings["notify_only_if_updates"]):
+        if webhook_url and (any_flagged or not settings["notify_only_if_updates"]):
             send_discord_notification(webhook_url, summary_lines)
 
     return summary_lines
@@ -472,6 +580,7 @@ def api_upgrade_one(host_id):
 
     started_at = datetime.now(timezone.utc).isoformat()
     result = upgrade_host(host, settings["ssh_timeout"])
+    result = _maybe_autoremove(host, settings["ssh_timeout"], result, bool(settings.get("auto_autoremove")))
     record_upgrade(host_id, started_at, result)
 
     # Re-vérifie immédiatement après l'upgrade pour rafraîchir le compteur
@@ -483,7 +592,7 @@ def api_upgrade_one(host_id):
 
 @app.route("/api/upgrade-stream/<int:host_id>", methods=["POST"])
 def api_upgrade_stream(host_id):
-    """Lance la mise à jour et streame la sortie SSH en direct (console live)."""
+    """Lance la mise à jour (+ nettoyage si activé) et streame la sortie SSH en direct."""
     settings = get_settings()
     with get_db() as conn:
         host = conn.execute("SELECT * FROM hosts WHERE id = ?", (host_id,)).fetchone()
@@ -491,14 +600,50 @@ def api_upgrade_stream(host_id):
         return Response("[ERREUR] host introuvable\n[DONE] status=error\n", mimetype="text/plain"), 404
 
     ssh_timeout = settings["ssh_timeout"]
+    auto_autoremove = bool(settings.get("auto_autoremove"))
     pm = PACKAGE_MANAGERS.get(host["package_manager"] or DEFAULT_PACKAGE_MANAGER, PACKAGE_MANAGERS[DEFAULT_PACKAGE_MANAGER])
     is_root = host["user"] == "root"
     max_duration = max(ssh_timeout * 40, 1800)  # garde-fou : 30 min par défaut
 
+    def stream_command(client, cmd, result_holder):
+        """Exécute cmd sur une session SSH dédiée, streame la sortie en
+        direct, et remplit result_holder avec exit_code/output à la fin."""
+        output_chunks = []
+        transport = client.get_transport()
+        channel = transport.open_session()
+        channel.set_combine_stderr(True)
+        channel.exec_command(cmd)
+        channel.settimeout(1.0)
+
+        start_time = time.monotonic()
+        while True:
+            if channel.recv_ready():
+                data = channel.recv(4096)
+                if data:
+                    text = data.decode("utf-8", errors="replace")
+                    output_chunks.append(text)
+                    yield text
+                continue
+            if channel.exit_status_ready():
+                break
+            if time.monotonic() - start_time > max_duration:
+                yield "\n[ERREUR] Délai maximum dépassé, arrêt du suivi (la commande continue peut-être côté serveur)\n"
+                break
+            time.sleep(0.2)
+
+        while channel.recv_ready():
+            data = channel.recv(4096)
+            text = data.decode("utf-8", errors="replace")
+            output_chunks.append(text)
+            yield text
+
+        result_holder["exit_code"] = channel.recv_exit_status() if channel.exit_status_ready() else -1
+        result_holder["output"] = "".join(output_chunks)
+
     def generate():
         started_at = datetime.now(timezone.utc).isoformat()
-        output_chunks = []
         status = "error"
+        full_output = ""
 
         yield f"$ Connexion SSH à {host['address']}:{host['port']}...\n"
         try:
@@ -513,45 +658,34 @@ def api_upgrade_stream(host_id):
         try:
             cmd = pm["upgrade_cmd"](is_root)
             yield f"$ {cmd}\n\n"
-
-            transport = client.get_transport()
-            channel = transport.open_session()
-            channel.set_combine_stderr(True)
-            channel.exec_command(cmd)
-            channel.settimeout(1.0)
-
-            start_time = time.monotonic()
-            while True:
-                if channel.recv_ready():
-                    data = channel.recv(4096)
-                    if data:
-                        text = data.decode("utf-8", errors="replace")
-                        output_chunks.append(text)
-                        yield text
-                    continue
-                if channel.exit_status_ready():
-                    break
-                if time.monotonic() - start_time > max_duration:
-                    yield "\n[ERREUR] Délai maximum dépassé, arrêt du suivi (la commande continue peut-être côté serveur)\n"
-                    break
-                time.sleep(0.2)
-
-            # Vide le buffer restant
-            while channel.recv_ready():
-                data = channel.recv(4096)
-                text = data.decode("utf-8", errors="replace")
-                output_chunks.append(text)
-                yield text
-
-            exit_code = channel.recv_exit_status() if channel.exit_status_ready() else -1
+            holder = {}
+            yield from stream_command(client, cmd, holder)
+            exit_code = holder.get("exit_code", -1)
+            full_output = holder.get("output", "")
             status = "ok" if (exit_code in pm["success_exit_codes"] or exit_code == 0) else "error"
-            record_upgrade(host_id, started_at, {"status": status, "output": "".join(output_chunks)})
-
             yield f"\n$ Terminé (code {exit_code})\n"
+
+            if status == "ok" and auto_autoremove:
+                if pm.get("autoremove_cmd"):
+                    ar_cmd = pm["autoremove_cmd"](is_root)
+                    yield f"\n$ {ar_cmd}\n\n"
+                    ar_holder = {}
+                    yield from stream_command(client, ar_cmd, ar_holder)
+                    ar_exit = ar_holder.get("exit_code", -1)
+                    full_output += "\n\n--- Suppression des paquets inutiles ---\n" + ar_holder.get("output", "")
+                    yield f"\n$ Nettoyage terminé (code {ar_exit})\n"
+                    if ar_exit != 0:
+                        full_output += "\n[Le nettoyage a échoué, la mise à jour elle-même a réussi]"
+                else:
+                    note = f"(pas de nettoyage automatique supporté pour {pm['label']})"
+                    yield f"\n$ {note}\n"
+                    full_output += "\n\n" + note
+
+            record_upgrade(host_id, started_at, {"status": status, "output": full_output})
         except Exception as e:
             err_msg = f"\n[ERREUR] {e}\n"
             yield err_msg
-            record_upgrade(host_id, started_at, {"status": "error", "output": "".join(output_chunks) + err_msg})
+            record_upgrade(host_id, started_at, {"status": "error", "output": full_output + err_msg})
             status = "error"
         finally:
             client.close()
@@ -668,6 +802,8 @@ def settings_save():
         "notify_only_if_updates": request.form.get("notify_only_if_updates") == "on",
         "schedule_cron": request.form.get("schedule_cron", "0 8 * * *").strip(),
         "ssh_timeout": request.form.get("ssh_timeout", 15),
+        "auto_upgrade": request.form.get("auto_upgrade") == "on",
+        "auto_autoremove": request.form.get("auto_autoremove") == "on",
     })
     start_scheduler()  # reprogramme immédiatement avec le nouveau planning
     return redirect(url_for("settings_page"))

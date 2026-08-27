@@ -24,6 +24,29 @@
       <label>Timeout SSH (secondes)</label>
       <input type="number" name="ssh_timeout" value="{{ settings.ssh_timeout }}">
 
+      <div class="checkbox-row" style="margin-top:22px;">
+        <input type="checkbox" name="auto_upgrade" id="auto_upgrade"
+               {% if settings.auto_upgrade %}checked{% endif %}>
+        <label for="auto_upgrade" style="margin:0;">Installer automatiquement les mises à jour trouvées lors de la vérification planifiée</label>
+      </div>
+      <div class="hint">
+        S'applique uniquement à la vérification planifiée (le cron ci-dessus) et au bouton "Vérifier tous les hosts" —
+        pas au bouton "Vérifier" individuel. Utilise la commande d'upgrade complète du gestionnaire de paquets de
+        chaque host ; si un host est réglé sur "sécurité uniquement", cette case ne limite pour l'instant que le
+        <em>comptage</em> affiché — l'installation automatique reste une mise à jour complète.
+      </div>
+
+      <div class="checkbox-row">
+        <input type="checkbox" name="auto_autoremove" id="auto_autoremove"
+               {% if settings.auto_autoremove %}checked{% endif %}>
+        <label for="auto_autoremove" style="margin:0;">Supprimer automatiquement les paquets devenus inutiles après une mise à jour</label>
+      </div>
+      <div class="hint">
+        S'applique après toute mise à jour réussie (planifiée, ou manuelle via le bouton "Mettre à jour").
+        Supporté pour APT, DNF, YUM et Pacman. Pas d'équivalent fiable pour APK (Alpine) et Zypper pour l'instant —
+        le log l'indiquera simplement sans rien supprimer sur ces hosts.
+      </div>
+
       <div class="actions">
         <button type="submit">Enregistrer</button>
       </div>
@@ -32,7 +55,12 @@
 
   <div class="card">
     <h2>Test rapide</h2>
-    <div class="sub">Déclenche une vérification globale immédiate (respecte le réglage de notification ci-dessus).</div>
+    <div class="sub">
+      Déclenche une vérification globale immédiate (respecte le réglage de notification ci-dessus).
+      {% if settings.auto_upgrade %}
+      <strong style="color:var(--warn);">Attention : "Installer automatiquement..." est activé — ce test installera réellement les mises à jour disponibles.</strong>
+      {% endif %}
+    </div>
     <button onclick="runNow()">Lancer une vérification maintenant</button>
     <pre id="result" style="margin-top:14px; white-space:pre-wrap; font-size:0.8rem; color:var(--muted);"></pre>
   </div>

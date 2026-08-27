@@ -24,18 +24,24 @@ l'app détecte automatiquement l'utilisateur `root` et lance les
 commandes `apt-get` directement, sans `sudo`.
 
 **Si tu connectes le host avec un utilisateur non-root**, il doit
-pouvoir lancer `apt-get update` et `apt-get upgrade` en sudo **sans
-mot de passe** (sinon la vérification et la mise à jour échoueront
-silencieusement côté SSH). Sur chaque host cible :
+pouvoir lancer `apt-get update`, `apt-get full-upgrade` et `apt-get
+autoremove` en sudo **sans mot de passe** (sinon la vérification et la
+mise à jour échoueront silencieusement côté SSH). Sur chaque host
+cible :
 
 ```bash
 sudo visudo -f /etc/sudoers.d/update-monitor
 ```
-Ajoute (remplace `DEFAULTUSER` par l'utilisateur SSH que tu vas déclarer dans
+Ajoute (remplace `USERNAME` par l'utilisateur SSH que tu vas déclarer dans
 l'interface) :
 ```
-DEFAULTUSER ALL=(ALL) NOPASSWD: /usr/bin/apt-get update, /usr/bin/apt-get upgrade
+USERNAME ALL=(ALL) NOPASSWD: /usr/bin/apt-get update, /usr/bin/apt-get full-upgrade, /usr/bin/apt-get autoremove
 ```
+⚠️ Sudoers matche la commande **avec ses arguments exacts** — si tu
+avais une ancienne règle avec `apt-get upgrade` (sans "full"), elle ne
+couvrira pas `full-upgrade` et l'upgrade redemandera un mot de passe.
+Mets à jour la ligne sur chaque host si tu migres depuis une version
+précédente de l'outil.
 
 Génère une clé SSH dédiée si tu n'en as pas déjà une, et déploie la
 clé publique sur chaque host (`ssh-copy-id`). L'authentification par
@@ -77,12 +83,43 @@ automatiquement une vérification pour rafraîchir le compteur ; ferme
 la fenêtre pour recharger la page. Le log complet reste aussi
 consultable après coup sur le dashboard ("Log").
 
+Pour APT, la commande utilisée est `apt-get full-upgrade` (pas le
+simple `upgrade`) : elle autorise l'installation/suppression de
+paquets liés quand une résolution de dépendances l'exige (typique
+lors d'un changement de noyau, notamment sur les hosts Proxmox eux-
+mêmes). C'est volontaire — un simple `upgrade` peut laisser des
+paquets "retenus" (`kept back`) sans le signaler clairement, ce qui
+désynchronise le compteur affiché du réel état du host.
+
 Le bouton global "Mettre à jour les hosts en attente" (opération
 groupée) n'a pas de console live — il attend simplement la fin de
 toutes les mises à jour puis recharge la page.
 
 Selon le nombre de paquets à installer, l'opération peut prendre
 plusieurs minutes.
+
+## Mise à jour et nettoyage automatiques (planning)
+
+Deux options dans **Réglages**, indépendantes l'une de l'autre :
+
+- **Installer automatiquement les mises à jour trouvées** : quand
+  activée, la vérification planifiée (le cron) et le bouton "Vérifier
+  tous les hosts" installent réellement les mises à jour trouvées sur
+  chaque host (pas seulement les détecter). Le bouton "Vérifier"
+  individuel reste, lui, non-invasif dans tous les cas.
+  ⚠️ Le filtre "sécurité uniquement" d'un host ne limite pour l'instant
+  que le *comptage* affiché — l'installation automatique reste une
+  mise à jour complète, pas une mise à jour de sécurité seule.
+- **Supprimer automatiquement les paquets devenus inutiles** :
+  s'exécute après toute mise à jour réussie (planifiée ou manuelle via
+  le bouton "Mettre à jour"). Équivalent à `apt-get autoremove`,
+  `dnf/yum autoremove`, ou la suppression des paquets orphelins pour
+  Pacman. Pas d'équivalent fiable implémenté pour APK (Alpine) et
+  Zypper — le log l'indique simplement, rien n'est supprimé sur ces
+  hosts.
+
+Le résultat (sortie complète, y compris celle du nettoyage) reste
+consultable via "Log" sur le dashboard.
 
 ## Notification Discord
 
