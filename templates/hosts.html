@@ -69,7 +69,7 @@
     {% else %}
     <table>
       <thead>
-        <tr><th>Nom</th><th>Adresse</th><th>Utilisateur</th><th>Gestionnaire</th><th>Auth</th><th>Sécurité seule</th><th></th></tr>
+        <tr><th>Nom</th><th><a href="?sort=ip&order={{ 'desc' if sort == 'ip' and order == 'asc' else 'asc' }}" class="sort-link" title="Trier par adresse IP">Adresse {% if sort == 'ip' %}{{ '▲' if order == 'asc' else '▼' }}{% else %}↕{% endif %}</a></th><th>Utilisateur</th><th>Gestionnaire</th><th>Auth</th><th>Sécurité seule</th><th></th></tr>
       </thead>
       <tbody>
         {% for h in hosts %}

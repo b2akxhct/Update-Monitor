@@ -21,7 +21,7 @@
     <thead>
       <tr>
         <th>Host</th>
-        <th>Adresse</th>
+        <th><a href="?sort=ip&order={{ 'desc' if sort == 'ip' and order == 'asc' else 'asc' }}" class="sort-link" title="Trier par adresse IP">Adresse {% if sort == 'ip' %}{{ '▲' if order == 'asc' else '▼' }}{% else %}↕{% endif %}</a></th>
         <th>Statut</th>
         <th>Dernière vérification</th>
         <th>Dernière mise à jour</th>

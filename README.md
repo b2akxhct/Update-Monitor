@@ -151,6 +151,30 @@ Pacman et Zypper est basé sur le format habituel de ces outils — si ta
 distribution renvoie un format légèrement différent, le comptage peut
 être imprécis ; APT et APK sont les plus éprouvés.
 
+## Tri par adresse IP
+
+Sur le dashboard et sur la page Hosts, clique sur l'en-tête
+**Adresse** pour trier par IP : un clic = croissant (▲), un second
+clic = décroissant (▼). Le tri est numérique (`10.0.0.9` passe avant
+`10.0.0.10`), les adresses IPv6 viennent après les IPv4, et les noms
+d'hôte (non-IP) en dernier. Sans clic, l'ordre par nom reste le
+comportement par défaut. Le tri est dans l'URL (`?sort=ip&order=desc`),
+donc partageable en favori.
+
+## Mettre à jour l'outil lui-même
+
+Les dépendances Python sont figées dans `requirements.txt`. Pour
+récupérer à la fois les correctifs de l'image de base (`python:3.12-slim`)
+et ceux des bibliothèques, reconstruis en forçant le téléchargement :
+
+```bash
+docker compose build --pull --no-cache
+docker compose up -d
+```
+
+La base SQLite (`./data`) est conservée, les migrations de schéma
+sont automatiques.
+
 ## Limites connues
 
 - Ne surveille pas les mises à jour de conteneurs Docker — utilise

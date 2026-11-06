@@ -6,6 +6,7 @@ hosts, planning des vérifications automatiques, webhook Discord,
 et déclenchement manuel de vérifications ou de mises à jour réelles.
 """
 
+import ipaddress
 import os
 import re
 import sqlite3
@@ -528,6 +529,28 @@ def start_scheduler():
 
 
 # ---------------------------------------------------------------------------
+# Tri par adresse IP
+# ---------------------------------------------------------------------------
+
+def _ip_sort_key(address):
+    """Clé de tri numérique : 10.0.0.9 < 10.0.0.10. Les hostnames (non-IP)
+    passent après les IP, triés alphabétiquement."""
+    try:
+        ip = ipaddress.ip_address((address or "").strip())
+        return (0, ip.version, int(ip), "")
+    except ValueError:
+        return (1, 0, 0, (address or "").lower())
+
+
+def _sort_params():
+    """Lit ?sort=ip&order=asc|desc. Retourne (sort, order) ; sort vaut
+    None si aucun tri par IP n'est demandé (tri par nom par défaut)."""
+    sort = "ip" if request.args.get("sort") == "ip" else None
+    order = "desc" if request.args.get("order") == "desc" else "asc"
+    return sort, order
+
+
+# ---------------------------------------------------------------------------
 # Routes — Dashboard
 # ---------------------------------------------------------------------------
 
@@ -548,7 +571,10 @@ def dashboard():
                 "last_check": dict(last) if last else None,
                 "last_upgrade": dict(last_upgrade) if last_upgrade else None,
             })
-    return render_template("dashboard.html", data=data, active="dashboard")
+    sort, order = _sort_params()
+    if sort == "ip":
+        data.sort(key=lambda r: _ip_sort_key(r["host"]["address"]), reverse=(order == "desc"))
+    return render_template("dashboard.html", data=data, active="dashboard", sort=sort, order=order)
 
 
 @app.route("/api/check/<int:host_id>", methods=["POST"])
@@ -715,9 +741,13 @@ def api_upgrade_stream(host_id):
 def hosts_page():
     with get_db() as conn:
         hosts = conn.execute("SELECT * FROM hosts ORDER BY name").fetchall()
+    sort, order = _sort_params()
+    if sort == "ip":
+        hosts = sorted(hosts, key=lambda h: _ip_sort_key(h["address"]), reverse=(order == "desc"))
     return render_template(
         "hosts.html", hosts=hosts, edit_host=None, active="hosts",
         package_managers=PACKAGE_MANAGERS, default_pm=DEFAULT_PACKAGE_MANAGER,
+        sort=sort, order=order,
     )
 
 
@@ -732,9 +762,13 @@ def hosts_edit_form(host_id):
     with get_db() as conn:
         hosts = conn.execute("SELECT * FROM hosts ORDER BY name").fetchall()
         edit_host = conn.execute("SELECT * FROM hosts WHERE id = ?", (host_id,)).fetchone()
+    sort, order = _sort_params()
+    if sort == "ip":
+        hosts = sorted(hosts, key=lambda h: _ip_sort_key(h["address"]), reverse=(order == "desc"))
     return render_template(
         "hosts.html", hosts=hosts, edit_host=edit_host, active="hosts",
         package_managers=PACKAGE_MANAGERS, default_pm=DEFAULT_PACKAGE_MANAGER,
+        sort=sort, order=order,
     )
 
 
